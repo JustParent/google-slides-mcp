@@ -465,6 +465,45 @@ def insert_text(
     return {"objectId": element_id, "inserted": len(text)}
 
 
+@mcp.tool()
+def set_element_text(
+    presentation_id: str,
+    element_id: str,
+    text: str,
+) -> dict[str, Any]:
+    """Replace ALL of a shape's (or table cell's) text in one call. (1 API call.)
+
+    Clears the element's existing text and sets it to ``text`` in a single batch
+    (``deleteText`` + ``insertText``). Safe to call on an empty element. This is the
+    ergonomic way to fill a freshly duplicated slide when the showcase example uses
+    real text rather than ``{{placeholder}}`` tokens.
+
+    Args:
+        presentation_id: The presentation ID.
+        element_id: The shape or table-cell object ID.
+        text: The new full text content.
+    """
+    services = get_services()
+    execute(
+        services.slides.presentations().batchUpdate(
+            presentationId=presentation_id,
+            body={
+                "requests": [
+                    {"deleteText": {"objectId": element_id, "textRange": {"type": "ALL"}}},
+                    {
+                        "insertText": {
+                            "objectId": element_id,
+                            "text": text,
+                            "insertionIndex": 0,
+                        }
+                    },
+                ]
+            },
+        )
+    )
+    return {"objectId": element_id, "length": len(text)}
+
+
 # --------------------------------------------------------------------------- #
 # Template / copy (showcase workflow)
 # --------------------------------------------------------------------------- #
@@ -543,6 +582,40 @@ def reorder_slides(
     return template_mod.reorder_slides(
         get_services(), presentation_id, slide_ids, insertion_index
     )
+
+
+# --------------------------------------------------------------------------- #
+# Iteration / palette
+# --------------------------------------------------------------------------- #
+@mcp.tool()
+def park_slides(
+    presentation_id: str, slide_ids: list[str]
+) -> dict[str, Any]:
+    """Hide slides (mark skipped) so they stay as a clone source. (1 API call.)
+
+    Keeps the showcase example/original slides in the deck as a reusable "palette"
+    while hiding them from presentation mode. Duplicate from them across as many
+    turns as you like, then ``prune_parked_slides`` at the very end.
+    """
+    return template_mod.park_slides(get_services(), presentation_id, slide_ids)
+
+
+@mcp.tool()
+def unpark_slides(
+    presentation_id: str, slide_ids: list[str]
+) -> dict[str, Any]:
+    """Unhide slides previously parked (mark not skipped). (1 API call.)"""
+    return template_mod.unpark_slides(get_services(), presentation_id, slide_ids)
+
+
+@mcp.tool()
+def prune_parked_slides(presentation_id: str) -> dict[str, Any]:
+    """Delete every parked (hidden/skipped) slide — final cleanup. (<=2 API calls.)
+
+    Removes ALL slides currently marked skipped, so use it deliberately as the last
+    step once the deck is assembled.
+    """
+    return template_mod.prune_parked_slides(get_services(), presentation_id)
 
 
 # --------------------------------------------------------------------------- #

@@ -113,6 +113,9 @@ def summarize_page(page: dict[str, Any]) -> dict[str, Any]:
     if slide_props:
         summary["layoutObjectId"] = slide_props.get("layoutObjectId")
         summary["masterObjectId"] = slide_props.get("masterObjectId")
+        # Only surface when parked/hidden, to keep output lean.
+        if slide_props.get("isSkipped"):
+            summary["isSkipped"] = True
     if truncated:
         summary["elementsTruncated"] = True
     return summary

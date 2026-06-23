@@ -95,9 +95,91 @@ def catalog_slides(services: Services, presentation_id: str) -> list[dict[str, A
                 "elementTypes": type_counts,
                 "placeholders": placeholders,
                 "title": title_snippet,
+                # Surface parked/hidden state so the model knows what is a palette
+                # source vs. a real deck slide.
+                "isSkipped": bool(slide_props.get("isSkipped", False)),
             }
         )
     return catalog
+
+
+def skipped_slide_ids(presentation: dict[str, Any]) -> list[str]:
+    """Return the object IDs of slides marked skipped/hidden (``isSkipped``).
+
+    Pure function (no API call) so it is easy to unit-test.
+    """
+    return [
+        slide["objectId"]
+        for slide in presentation.get("slides", [])
+        if slide.get("slideProperties", {}).get("isSkipped") and slide.get("objectId")
+    ]
+
+
+def _set_skipped(
+    services: Services,
+    presentation_id: str,
+    slide_ids: list[str],
+    skipped: bool,
+) -> None:
+    requests = [
+        {
+            "updateSlideProperties": {
+                "objectId": slide_id,
+                "slideProperties": {"isSkipped": skipped},
+                "fields": "isSkipped",
+            }
+        }
+        for slide_id in slide_ids
+    ]
+    execute(
+        services.slides.presentations().batchUpdate(
+            presentationId=presentation_id, body={"requests": requests}
+        )
+    )
+
+
+def park_slides(
+    services: Services, presentation_id: str, slide_ids: list[str]
+) -> dict[str, Any]:
+    """Hide slides by marking them skipped (1 batchUpdate call).
+
+    Parked slides stay in the deck as a clone source (the "palette") but are
+    skipped during presentation. Use it on the showcase example/original slides
+    while you iteratively duplicate from them.
+    """
+    _set_skipped(services, presentation_id, slide_ids, True)
+    return {"parked": slide_ids}
+
+
+def unpark_slides(
+    services: Services, presentation_id: str, slide_ids: list[str]
+) -> dict[str, Any]:
+    """Unhide slides previously parked (1 batchUpdate call)."""
+    _set_skipped(services, presentation_id, slide_ids, False)
+    return {"unparked": slide_ids}
+
+
+def prune_parked_slides(
+    services: Services, presentation_id: str
+) -> dict[str, Any]:
+    """Delete every parked (skipped) slide — the final cleanup (<=2 API calls).
+
+    Reads the deck to find all slides with ``isSkipped=true``, then deletes them in
+    one batch. Removes **all** skipped slides, so park deliberately.
+    """
+    presentation = execute(
+        services.slides.presentations().get(presentationId=presentation_id)
+    )
+    ids = skipped_slide_ids(presentation)
+    if not ids:
+        return {"deleted": []}
+    execute(
+        services.slides.presentations().batchUpdate(
+            presentationId=presentation_id,
+            body={"requests": [{"deleteObject": {"objectId": oid}} for oid in ids]},
+        )
+    )
+    return {"deleted": ids}
 
 
 def duplicate_slide(
