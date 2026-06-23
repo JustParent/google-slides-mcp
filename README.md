@@ -63,7 +63,9 @@ The high‑fidelity pattern this server implements is:
 > Scope note: this server requests the broad `auth/drive` scope so it can
 > `files.copy` *any* template you own by ID. If you only ever copy decks the app
 > itself created, you can narrow this via `GOOGLE_SLIDES_SCOPES` (see below), but
-> the showcase workflow on existing decks needs `auth/drive`.
+> the showcase workflow on existing decks needs `auth/drive`. Google requires the
+> fully‑qualified scope URLs (e.g. `https://www.googleapis.com/auth/drive`); the
+> short names `presentations` / `drive` are accepted and expanded for you.
 
 ## 2. Install & first‑time login
 
@@ -124,7 +126,7 @@ After PyPI publication: `"args": ["google-slides-mcp"]`.
 | ---------------------------------------------- | ----------------------------------------- | --------------------------------------------------------- |
 | `GOOGLE_CLIENT_SECRET` (alias `CREDENTIALS_PATH`) | `client_secret.json`                   | Path to the Desktop OAuth client JSON.                    |
 | `GOOGLE_TOKEN_PATH` (alias `TOKEN_PATH`)       | `~/.config/google-slides-mcp/token.json`  | Where this user's cached token is stored (must be writable). |
-| `GOOGLE_SLIDES_SCOPES`                         | `presentations,drive`                     | Comma‑separated scope override (advanced).                |
+| `GOOGLE_SLIDES_SCOPES`                         | `presentations,drive`                     | Comma‑separated scope override (advanced). Short names or full `https://www.googleapis.com/auth/...` URLs; short names are expanded. |
 | `GOOGLE_SLIDES_NO_BROWSER_AUTH`                | unset                                     | Set to `1` to disable the automatic browser flow on first launch (headless). |
 
 > The `GOOGLE_*` names and the shorter aliases (`CREDENTIALS_PATH` / `TOKEN_PATH`)
@@ -286,6 +288,11 @@ The codebase is intentionally small and modular so it can back that skill:
   re-run the auth command or publish the consent screen.
 - **`insufficient scopes` / can't copy a template** — ensure the `auth/drive` scope
   is granted (re-run auth after enabling it on the consent screen).
+- **"Access blocked: Authorization Error" / `Error 400: invalid_scope`
+  (`Some requested scopes were invalid`)** — the scopes sent weren't
+  fully‑qualified URLs. Use the full `https://www.googleapis.com/auth/...` form (or
+  the short names `presentations` / `drive`, which are now expanded for you) in
+  `GOOGLE_SLIDES_SCOPES`.
 
 ## License
 
