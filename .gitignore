@@ -1,0 +1,26 @@
+# Secrets & credentials — never commit
+client_secret.json
+client_secret*.json
+token.json
+*.token.json
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# OS
+.DS_Store

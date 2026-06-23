@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "google-slides-mcp"
+version = "0.1.0"
+description = "A uvx-runnable, low-level MCP server for the Google Slides API, with template/showcase reuse, transform editing, and PNG rendering."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "JustParent" }]
+keywords = ["mcp", "google-slides", "google-api", "presentations", "llm"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "mcp>=1.2.0",
+    "google-api-python-client>=2.100.0",
+    "google-auth>=2.26.0",
+    "google-auth-oauthlib>=1.2.0",
+    "Pillow>=10.0.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0"]
+
+[project.scripts]
+google-slides-mcp = "google_slides_mcp.server:main"
+google-slides-mcp-auth = "google_slides_mcp.auth:auth_main"
+
+[project.urls]
+Homepage = "https://github.com/justparent/google-slides-mcp"
+Repository = "https://github.com/justparent/google-slides-mcp"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/google_slides_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
