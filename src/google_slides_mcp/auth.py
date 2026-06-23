@@ -48,12 +48,28 @@ DEFAULT_CLIENT_SECRET = "client_secret.json"
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
+# Google OAuth scopes must be fully-qualified URLs; bare names like "drive" are
+# rejected with `invalid_scope`. Short names are expanded under this prefix.
+_SCOPE_PREFIX = "https://www.googleapis.com/auth/"
+
+
+def _normalize_scope(scope: str) -> str:
+    """Expand a short scope name (e.g. ``drive``) to its full Google URL."""
+    if "://" in scope:
+        return scope
+    return _SCOPE_PREFIX + scope.lstrip("/")
+
 
 def get_scopes() -> list[str]:
-    """Return the OAuth scopes, allowing an env override."""
+    """Return the OAuth scopes, allowing an env override.
+
+    ``GOOGLE_SLIDES_SCOPES`` may use either full URLs or short names
+    (``presentations,drive``); short names are expanded to the required
+    ``https://www.googleapis.com/auth/...`` form so Google doesn't reject them.
+    """
     raw = os.environ.get("GOOGLE_SLIDES_SCOPES")
     if raw:
-        return [s.strip() for s in raw.split(",") if s.strip()]
+        return [_normalize_scope(s.strip()) for s in raw.split(",") if s.strip()]
     return list(DEFAULT_SCOPES)
 
 
