@@ -244,8 +244,10 @@ uv run pytest                 # unit + smoke tests (no network/credentials)
 uv build                      # build sdist + wheel
 ```
 
-The codebase is intentionally small and modular so it can back a Claude *skill*
-that teaches the Slides API:
+A ready-to-use Claude *skill* describing the canonical workflow lives at
+[`example_skill/SKILL.md`](example_skill/SKILL.md).
+
+The codebase is intentionally small and modular so it can back that skill:
 
 | Module | Responsibility |
 | ------ | -------------- |
