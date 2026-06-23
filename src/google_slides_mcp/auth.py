@@ -1,20 +1,35 @@
 """OAuth2 (installed-app) authentication for the Google Slides MCP.
 
-A stdio MCP server is spawned fresh by the client and cannot reliably run an
-interactive browser consent flow on its first tool call. To avoid that, auth is
-split in two:
+Auth uses a standard interactive OAuth 2.0 installed-app model designed to roll
+out to multiple people: distribute one **Desktop** OAuth client JSON to your
+users, and each person logs in once in a browser, producing a personal refresh
+token cached on their machine. There is no shared, single-user token.
 
-* ``auth_main()`` is a separate console command (``google-slides-mcp-auth``) that
-  the user runs **once** interactively. It opens a browser, performs the consent
-  flow, and writes a cached token to ``GOOGLE_TOKEN_PATH``.
-* ``load_credentials()`` is what the server uses at runtime. It loads the cached
-  token, refreshes it silently when possible, and raises an actionable error if
-  the user has not logged in yet.
+Two paths obtain credentials:
+
+* ``run_login_flow()`` / the ``google-slides-mcp-auth`` console command run the
+  interactive browser consent flow explicitly and cache the token. Recommended as
+  a one-time onboarding step, and required for headless setups.
+* ``ensure_credentials()`` is called at server startup. If a valid (or
+  refreshable) token already exists it returns immediately with **no** browser;
+  otherwise it runs the consent flow automatically so the very first launch "just
+  works". Its stdout is redirected to stderr so the interactive flow can never
+  corrupt the MCP stdio JSON-RPC channel.
+
+Environment variables (the ``GOOGLE_*`` names and the shorter aliases are
+interchangeable; the ``GOOGLE_*`` name wins if both are set):
+
+* OAuth client secret JSON: ``GOOGLE_CLIENT_SECRET`` or ``CREDENTIALS_PATH``.
+* Token cache path: ``GOOGLE_TOKEN_PATH`` or ``TOKEN_PATH``.
+* Scope override (advanced): ``GOOGLE_SLIDES_SCOPES``.
+* Disable the automatic browser flow at startup: ``GOOGLE_SLIDES_NO_BROWSER_AUTH``.
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
+import sys
 from pathlib import Path
 
 from google.auth.transport.requests import Request
@@ -31,6 +46,8 @@ DEFAULT_SCOPES = [
 DEFAULT_TOKEN_PATH = "~/.config/google-slides-mcp/token.json"
 DEFAULT_CLIENT_SECRET = "client_secret.json"
 
+_TRUTHY = {"1", "true", "yes", "on"}
+
 
 def get_scopes() -> list[str]:
     """Return the OAuth scopes, allowing an env override."""
@@ -40,14 +57,23 @@ def get_scopes() -> list[str]:
     return list(DEFAULT_SCOPES)
 
 
+def _first_env(*names: str) -> str | None:
+    """Return the first non-empty value among the given env var names."""
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            return value
+    return None
+
+
 def _token_path() -> Path:
-    return Path(os.environ.get("GOOGLE_TOKEN_PATH", DEFAULT_TOKEN_PATH)).expanduser()
+    raw = _first_env("GOOGLE_TOKEN_PATH", "TOKEN_PATH") or DEFAULT_TOKEN_PATH
+    return Path(raw).expanduser()
 
 
 def _client_secret_path() -> Path:
-    return Path(
-        os.environ.get("GOOGLE_CLIENT_SECRET", DEFAULT_CLIENT_SECRET)
-    ).expanduser()
+    raw = _first_env("GOOGLE_CLIENT_SECRET", "CREDENTIALS_PATH") or DEFAULT_CLIENT_SECRET
+    return Path(raw).expanduser()
 
 
 class AuthError(RuntimeError):
@@ -65,44 +91,100 @@ def _write_token(creds: Credentials, path: Path) -> None:
         pass
 
 
-def load_credentials() -> Credentials:
-    """Load cached credentials for the server, refreshing if needed.
+def _run_consent_flow() -> Credentials:
+    """Run the interactive browser consent flow and cache the resulting token."""
+    client_secret = _client_secret_path()
+    if not client_secret.exists():
+        raise AuthError(
+            f"OAuth client secret not found at {client_secret}. Download a Desktop "
+            "OAuth client from Google Cloud Console (APIs & Services -> Credentials) "
+            "and point GOOGLE_CLIENT_SECRET (or CREDENTIALS_PATH) at its path."
+        )
+
+    flow = InstalledAppFlow.from_client_secrets_file(str(client_secret), get_scopes())
+    # port=0 lets the OS pick a free port for the loopback redirect.
+    creds = flow.run_local_server(port=0)
+
+    _write_token(creds, _token_path())
+    return creds
+
+
+def load_credentials(*, allow_interactive: bool = False) -> Credentials:
+    """Load credentials for the server, refreshing (or re-authing) as needed.
+
+    Args:
+        allow_interactive: When True, fall back to the interactive browser consent
+            flow if there is no usable cached token. When False (the default, used
+            on every tool call) a missing/expired token raises :class:`AuthError`
+            instead of unexpectedly opening a browser mid-session.
 
     Raises:
-        AuthError: if no token exists yet, or it cannot be refreshed. The message
-            tells the user to run the ``google-slides-mcp-auth`` command.
+        AuthError: if usable credentials can't be obtained without user action and
+            ``allow_interactive`` is False.
     """
     token_path = _token_path()
     scopes = get_scopes()
 
-    if not token_path.exists():
-        raise AuthError(
-            f"No cached Google credentials at {token_path}. Run the one-time login "
-            "first:\n\n    GOOGLE_CLIENT_SECRET=/path/to/client_secret.json "
-            "google-slides-mcp-auth\n\n"
-            "(or set GOOGLE_TOKEN_PATH / GOOGLE_CLIENT_SECRET to match your config)."
-        )
+    creds: Credentials | None = None
+    if token_path.exists():
+        creds = Credentials.from_authorized_user_file(str(token_path), scopes)
 
-    creds = Credentials.from_authorized_user_file(str(token_path), scopes)
-
-    if creds.valid:
+    if creds and creds.valid:
         return creds
 
-    if creds.expired and creds.refresh_token:
+    if creds and creds.expired and creds.refresh_token:
         try:
             creds.refresh(Request())
         except Exception as exc:  # noqa: BLE001 - surface a friendly message
-            raise AuthError(
-                f"Cached token at {token_path} could not be refreshed ({exc}). "
-                "Re-run `google-slides-mcp-auth` to sign in again."
-            ) from exc
-        _write_token(creds, token_path)
-        return creds
+            if not allow_interactive:
+                raise AuthError(
+                    f"Cached token at {token_path} could not be refreshed ({exc}). "
+                    "Re-run `google-slides-mcp-auth` to sign in again."
+                ) from exc
+            # Fall through to a fresh interactive consent below.
+        else:
+            _write_token(creds, token_path)
+            return creds
 
+    if allow_interactive:
+        return _run_consent_flow()
+
+    if token_path.exists():
+        raise AuthError(
+            f"Cached token at {token_path} is invalid and has no refresh token. "
+            "Re-run `google-slides-mcp-auth` to sign in again."
+        )
     raise AuthError(
-        f"Cached token at {token_path} is invalid and has no refresh token. "
-        "Re-run `google-slides-mcp-auth` to sign in again."
+        f"No cached Google credentials at {token_path}. Run the one-time login "
+        "first:\n\n    GOOGLE_CLIENT_SECRET=/path/to/client_secret.json "
+        "google-slides-mcp-auth\n\n"
+        "(or set GOOGLE_TOKEN_PATH / GOOGLE_CLIENT_SECRET — equivalently "
+        "TOKEN_PATH / CREDENTIALS_PATH — to match your config)."
     )
+
+
+def ensure_credentials() -> Credentials | None:
+    """Resolve credentials at server startup.
+
+    Fast path: a valid or refreshable cached token returns immediately with **no**
+    browser. Otherwise, unless ``GOOGLE_SLIDES_NO_BROWSER_AUTH`` is set, run the
+    interactive consent flow so a user's first launch works without a separate
+    command. The flow's stdout is redirected to stderr so it can never corrupt the
+    stdio JSON-RPC channel.
+
+    Never raises: on failure it logs to stderr and returns ``None`` so the server
+    still starts and individual tool calls surface a clear :class:`AuthError`.
+    """
+    no_browser = (os.environ.get("GOOGLE_SLIDES_NO_BROWSER_AUTH") or "").strip().lower()
+    allow_interactive = no_browser not in _TRUTHY
+    try:
+        # redirect_stdout guards the MCP stdio channel during any consent prints;
+        # the fast (already-authed) path prints nothing.
+        with contextlib.redirect_stdout(sys.stderr):
+            return load_credentials(allow_interactive=allow_interactive)
+    except AuthError as exc:
+        print(f"google-slides-mcp: {exc}", file=sys.stderr)
+        return None
 
 
 def run_login_flow() -> Path:
@@ -111,23 +193,8 @@ def run_login_flow() -> Path:
     Returns:
         The path the token was written to.
     """
-    client_secret = _client_secret_path()
-    if not client_secret.exists():
-        raise AuthError(
-            f"OAuth client secret not found at {client_secret}. Download a Desktop "
-            "OAuth client from Google Cloud Console (APIs & Services -> Credentials) "
-            "and set GOOGLE_CLIENT_SECRET to its path."
-        )
-
-    flow = InstalledAppFlow.from_client_secrets_file(
-        str(client_secret), get_scopes()
-    )
-    # port=0 lets the OS pick a free port for the loopback redirect.
-    creds = flow.run_local_server(port=0)
-
-    token_path = _token_path()
-    _write_token(creds, token_path)
-    return token_path
+    _run_consent_flow()
+    return _token_path()
 
 
 def auth_main() -> None:

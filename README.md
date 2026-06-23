@@ -67,17 +67,32 @@ The high‑fidelity pattern this server implements is:
 
 ## 2. Install & first‑time login
 
-Authorize once with the dedicated login command (it opens a browser, then caches a
-token so the MCP server itself never needs an interactive flow):
+Auth uses a standard **interactive OAuth 2.0** installed‑app flow built to roll
+out to a team: you distribute **one** Desktop OAuth client JSON, and **each person
+logs in once in a browser** to cache their own personal refresh token. There is no
+shared, single‑user token.
+
+You can authorize either way:
+
+**Option A — let the server do it (zero extra commands).** Just configure the MCP
+server (next section) with your client secret. The **first launch** opens a browser
+for consent automatically and caches the token; every launch after that is silent.
+
+**Option B — log in explicitly up front** (recommended for headless/server hosts,
+or to authorize before wiring up your MCP client):
 
 ```bash
 GOOGLE_CLIENT_SECRET=/absolute/path/to/client_secret.json \
   uvx --from git+https://github.com/justparent/google-slides-mcp google-slides-mcp-auth
 ```
 
-This writes a token to `~/.config/google-slides-mcp/token.json` (override with
-`GOOGLE_TOKEN_PATH`). Once published to PyPI you'll be able to drop `--from …` and
-just run `uvx google-slides-mcp-auth`.
+Either way the token is written to `~/.config/google-slides-mcp/token.json`
+(override with `GOOGLE_TOKEN_PATH` / `TOKEN_PATH`). Once published to PyPI you'll be
+able to drop `--from …` and just run `uvx google-slides-mcp-auth`.
+
+> If you're deploying somewhere without a browser, set
+> `GOOGLE_SLIDES_NO_BROWSER_AUTH=1` so the server never tries to open one, and use
+> Option B to authorize ahead of time.
 
 ## 3. Configure your MCP client
 
@@ -105,11 +120,15 @@ After PyPI publication: `"args": ["google-slides-mcp"]`.
 
 ### Environment variables
 
-| Variable                | Default                                   | Purpose                                   |
-| ----------------------- | ----------------------------------------- | ----------------------------------------- |
-| `GOOGLE_CLIENT_SECRET`  | `client_secret.json`                      | Path to the Desktop OAuth client JSON.    |
-| `GOOGLE_TOKEN_PATH`     | `~/.config/google-slides-mcp/token.json`  | Where the cached token is stored.         |
-| `GOOGLE_SLIDES_SCOPES`  | `presentations,drive`                     | Comma‑separated scope override (advanced).|
+| Variable                                       | Default                                   | Purpose                                                   |
+| ---------------------------------------------- | ----------------------------------------- | --------------------------------------------------------- |
+| `GOOGLE_CLIENT_SECRET` (alias `CREDENTIALS_PATH`) | `client_secret.json`                   | Path to the Desktop OAuth client JSON.                    |
+| `GOOGLE_TOKEN_PATH` (alias `TOKEN_PATH`)       | `~/.config/google-slides-mcp/token.json`  | Where this user's cached token is stored (must be writable). |
+| `GOOGLE_SLIDES_SCOPES`                         | `presentations,drive`                     | Comma‑separated scope override (advanced).                |
+| `GOOGLE_SLIDES_NO_BROWSER_AUTH`                | unset                                     | Set to `1` to disable the automatic browser flow on first launch (headless). |
+
+> The `GOOGLE_*` names and the shorter aliases (`CREDENTIALS_PATH` / `TOKEN_PATH`)
+> are interchangeable; if both are set, the `GOOGLE_*` name wins.
 
 ---
 

@@ -669,7 +669,16 @@ def diff_pages(
 
 
 def main() -> None:
-    """Console entry point: ``google-slides-mcp`` (stdio transport)."""
+    """Console entry point: ``google-slides-mcp`` (stdio transport).
+
+    Resolve credentials before starting the stdio loop. A cached token returns
+    immediately; an unauthenticated first launch runs the interactive consent flow
+    (unless ``GOOGLE_SLIDES_NO_BROWSER_AUTH`` is set). Failures are logged to stderr
+    and the server still starts, so tool calls surface a clear auth error.
+    """
+    from .auth import ensure_credentials
+
+    ensure_credentials()
     mcp.run()
 
 
