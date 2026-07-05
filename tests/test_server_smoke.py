@@ -9,6 +9,8 @@ import asyncio
 from google_slides_mcp import server
 
 EXPECTED_TOOLS = {
+    "search_presentations",
+    "import_presentation",
     "create_presentation",
     "get_presentation",
     "get_page",

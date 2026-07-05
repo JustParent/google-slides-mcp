@@ -2,8 +2,9 @@
 name: google-slides
 description: >-
   Build and edit Google Slides presentations with the google-slides-mcp server.
-  Use when the user wants to assemble a deck by reusing styled example slides from
-  a showcase/template, fill or restyle slide content, move/resize elements
+  Use when the user wants to find existing decks in their Drive (Google Slides or
+  .pptx), assemble a deck by reusing styled example slides from a
+  showcase/template, fill or restyle slide content, move/resize elements
   (bounding boxes), reorder or hide slides, or render slides to PNG to verify the
   result looks right. Covers the high-fidelity "copy a showcase, duplicate the
   slides you want, fill, prune" workflow.
@@ -38,8 +39,36 @@ Editing the copy this way is functionally identical to hand-editing the showcase
   login (`google-slides-mcp-auth`). If a tool returns "No cached Google
   credentials…", tell the user to run that command; do not try to work around it.
 - You need the **showcase/template presentation ID** (the long ID in its URL:
-  `https://docs.google.com/presentation/d/<ID>/edit`). Ask the user for it if you
-  don't have it.
+  `https://docs.google.com/presentation/d/<ID>/edit`). If the user doesn't give
+  you one, find it with `search_presentations` (see below) before asking.
+
+## Finding existing decks (Drive discovery)
+
+`search_presentations` searches the user's Drive across **native Google Slides
+and PowerPoint (`.pptx`/`.ppt`) files** — use it whenever the user refers to a
+deck by description rather than ID:
+
+```
+search_presentations(order_by="createdTime desc", owned_by_me=true, max_results=1)
+  → "the last presentation I created"
+search_presentations(name_contains="corporate template", file_type="google_slides")
+  → find a template by name
+search_presentations(full_text_contains="Q3 revenue")
+  → decks mentioning a topic (order_by is ignored by Drive for full-text queries)
+```
+
+Results include `fileType` and `directlyEditable`. Only native Google Slides
+files can be used as a `presentation_id`; for a `.pptx` result, convert it first
+(the original file is left untouched):
+
+```
+import_presentation(file_id="<pptx_id>")   → { presentationId, url }
+```
+
+So "take my last deck and port it into our corporate template" is:
+`search_presentations` (find source, import if `.pptx`) → `search_presentations`
+(find template) → `copy_presentation` (template) → `catalog_slides` on both →
+rebuild each source slide on a duplicated template layout.
 
 ## Canonical workflow
 

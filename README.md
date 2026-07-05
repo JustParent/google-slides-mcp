@@ -6,6 +6,10 @@ interaction with the Google Slides API.
 It is built to be more capable than typical Slides MCPs. In addition to reading
 presentations and slides as structured objects, it can:
 
+- **Find existing presentations in your Drive** — native Google Slides *and*
+  PowerPoint (`.pptx`) files — by name, content, or recency ("the last deck I
+  created"), and **import a `.pptx` as a native Slides deck** so every other
+  tool works on it.
 - **Reuse a "model template" / showcase deck with full fidelity.** Copy a styled
   showcase deck, duplicate the example slides you want (e.g. a 3‑column layout),
   fill them with content, and prune the rest — leaving a result *functionally
@@ -136,6 +140,20 @@ After PyPI publication: `"args": ["google-slides-mcp"]`.
 
 ## Tools
 
+**Find / import (Drive discovery)**
+
+| Tool | Purpose | API calls |
+| ---- | ------- | --------- |
+| `search_presentations(name_contains?, full_text_contains?, file_type?, order_by?, max_results?, owned_by_me?, created_after?, modified_after?, page_token?)` | Find existing Google Slides **and** PowerPoint files in Drive. | 1 |
+| `import_presentation(file_id, title?, parent_folder_id?)` | Convert a Drive `.pptx`/`.ppt` into a native Slides deck (original untouched). | 1 |
+
+> The Slides API has no listing endpoint, so discovery goes through Drive.
+> `search_presentations` covers native decks and PowerPoint files; results flag
+> `directlyEditable` so you know when an `import_presentation` conversion is
+> needed first. Recipes: *last deck I created* →
+> `order_by="createdTime desc", owned_by_me=true, max_results=1`; *find the
+> corporate template* → `name_contains="corporate template"`.
+
 **Core read**
 
 | Tool | Purpose | API calls |
@@ -213,6 +231,23 @@ diff_pages(presentation_id="<new_id>", page_a="<new_slide>", page_b="<showcase_e
 
 ---
 
+## Example: port your latest deck into the corporate template
+
+```
+search_presentations(order_by="createdTime desc", owned_by_me=true, max_results=1)
+                                                                      → the source deck (or .pptx)
+import_presentation(file_id="<source_id>")                            → only if the source is a .pptx
+search_presentations(name_contains="corporate template", file_type="google_slides")
+                                                                      → the template deck
+copy_presentation(source_id="<template_id>", title="Q3 Review (rebranded)")
+catalog_slides(presentation_id="<source_id>")                         → read the source content
+catalog_slides(presentation_id="<new_id>")                            → pick matching template layouts
+duplicate_slide / set_element_text / replace_all_text                 → rebuild each slide on-brand
+render_page(presentation_id="<new_id>", page_id="<slide>")            → verify
+```
+
+---
+
 ## Iterative / palette workflow
 
 You do **not** have to assemble the deck in one shot. Every tool is an independent
@@ -278,6 +313,7 @@ The codebase is intentionally small and modular so it can back that skill:
 | `views.py` | Trims verbose API responses into bounded summaries. |
 | `ids.py` | Collision‑safe object‑ID generation. |
 | `template.py` | Copy / catalog / duplicate / prune helpers. |
+| `search.py` | Drive search over Slides/PPTX files; PPTX → Slides import. |
 | `render.py` | Thumbnail rendering + Pillow image diff. |
 | `server.py` | FastMCP server wiring the tools together. |
 

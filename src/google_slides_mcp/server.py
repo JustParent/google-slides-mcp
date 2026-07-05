@@ -17,6 +17,7 @@ from mcp.server.fastmcp import FastMCP, Image
 from pydantic import Field
 
 from . import render as render_mod
+from . import search as search_mod
 from . import template as template_mod
 from . import views
 from .client import execute, get_services
@@ -27,6 +28,103 @@ mcp = FastMCP("google-slides")
 
 # Field masks are required by these requests; warn if the caller forgot one.
 _FIELD_MASK_REQUESTS = {"updateShapeProperties", "updateTextStyle", "updatePageProperties"}
+
+
+# --------------------------------------------------------------------------- #
+# Find / import (Drive discovery)
+# --------------------------------------------------------------------------- #
+@mcp.tool()
+def search_presentations(
+    name_contains: str | None = None,
+    full_text_contains: str | None = None,
+    file_type: Annotated[
+        str, Field(description="all, google_slides, or pptx")
+    ] = "all",
+    order_by: Annotated[
+        str,
+        Field(
+            description=(
+                "createdTime, modifiedTime, viewedByMeTime, name, or recency — "
+                "optionally suffixed with ' desc'"
+            )
+        ),
+    ] = "modifiedTime desc",
+    max_results: int = 20,
+    owned_by_me: bool | None = None,
+    created_after: str | None = None,
+    modified_after: str | None = None,
+    page_token: str | None = None,
+) -> dict[str, Any]:
+    """Find existing Google Slides and PowerPoint files in Drive. (1 API call.)
+
+    The discovery entry point: the Slides API has no listing endpoint, so this
+    searches Drive across native Slides decks and PowerPoint (``.pptx``/``.ppt``)
+    files. With no filters it lists your most recently modified presentations.
+
+    Common recipes:
+
+    * Last deck you created: ``order_by="createdTime desc", owned_by_me=True, max_results=1``.
+    * Find the corporate template: ``name_contains="corporate template"``.
+    * Decks mentioning a topic: ``full_text_contains="Q3 revenue"`` (note: Drive
+      ignores ``order_by`` when ``full_text_contains`` is used).
+
+    Each result includes ``fileType`` and ``directlyEditable``: only
+    ``google_slides`` files can be used as ``presentation_id`` with the other
+    tools — run ``import_presentation`` on a ``pptx`` result first.
+
+    Args:
+        name_contains: Match against the file name (case-insensitive).
+        full_text_contains: Match against the file's full text content.
+        file_type: ``all`` (default), ``google_slides``, or ``pptx``.
+        order_by: Sort key, e.g. ``"modifiedTime desc"`` (default) or
+            ``"createdTime desc"``.
+        max_results: Page size, 1-100 (default 20).
+        owned_by_me: If True, only files you own.
+        created_after: RFC3339 timestamp, e.g. ``"2026-01-01T00:00:00"``.
+        modified_after: RFC3339 timestamp lower bound on last modification.
+        page_token: ``nextPageToken`` from a previous call to fetch more.
+
+    Returns:
+        ``{files: [{id, name, fileType, mimeType, createdTime, modifiedTime,
+        url, owners, directlyEditable}], nextPageToken?}``.
+    """
+    return search_mod.search_presentations(
+        get_services(),
+        name_contains=name_contains,
+        full_text_contains=full_text_contains,
+        file_type=file_type,
+        order_by=order_by,
+        max_results=max_results,
+        owned_by_me=owned_by_me,
+        created_after=created_after,
+        modified_after=modified_after,
+        page_token=page_token,
+    )
+
+
+@mcp.tool()
+def import_presentation(
+    file_id: str,
+    title: str | None = None,
+    parent_folder_id: str | None = None,
+) -> dict[str, Any]:
+    """Convert a PowerPoint file in Drive to a native Google Slides deck. (1 call.)
+
+    PowerPoint (``.pptx``/``.ppt``) files cannot be edited by the Slides API
+    directly. This copies the file with Drive's built-in conversion, leaving the
+    original untouched, and returns a ``presentationId`` usable with every other
+    tool (including as a ``copy_presentation`` source for the template workflow).
+    Conversion is high quality but not guaranteed pixel-perfect — verify with
+    ``render_page`` if fidelity matters.
+
+    Args:
+        file_id: Drive file ID of the PowerPoint file (from ``search_presentations``).
+        title: Title for the converted deck (defaults to the source file's name).
+        parent_folder_id: Optional Drive folder to place the converted deck in.
+    """
+    return search_mod.import_presentation(
+        get_services(), file_id, title=title, parent_folder_id=parent_folder_id
+    )
 
 
 # --------------------------------------------------------------------------- #
