@@ -70,3 +70,41 @@ def test_summarize_presentation_basic():
     with_masters = views.summarize_presentation(presentation, include_masters=True)
     assert len(with_masters["masters"]) == 1
     assert len(with_masters["layouts"]) == 1
+
+
+def test_summary_stays_lean_without_comments():
+    presentation = {
+        "slides": [{"objectId": "s1", "pageType": "SLIDE", "pageElements": []}],
+        "comments": [],
+    }
+    summary = views.summarize_presentation(presentation)
+    assert "comments" not in summary
+    assert "openComments" not in summary["slides"][0]
+
+
+def test_summary_counts_open_comments_overall_and_per_slide():
+    anchor = {"anchorId": "a1", "objectAnchors": [{"objectId": "s2"}]}
+    presentation = {
+        "slides": [
+            {"objectId": "s1", "pageType": "SLIDE", "pageElements": []},
+            {"objectId": "s2", "pageType": "SLIDE", "pageElements": [], "commentAnchors": [anchor]},
+        ],
+        "comments": [
+            {"commentId": "c1", "anchorId": "a1", "status": "OPEN"},
+            {"commentId": "c2", "anchorId": "a1", "status": "RESOLVED"},
+            {"commentId": "c3", "anchorId": "gone", "status": "OPEN"},
+        ],
+    }
+    summary = views.summarize_presentation(presentation)
+    assert summary["comments"] == {"open": 2, "resolved": 1, "orphaned": 1}
+    assert [s.get("openComments") for s in summary["slides"]] == [None, 1]
+
+
+def test_page_summary_counts_the_open_threads_of_a_pages_get_response():
+    page = {
+        "objectId": "s1",
+        "pageElements": [],
+        "comments": [{"status": "OPEN"}, {"status": "RESOLVED"}, {"status": "OPEN"}],
+    }
+    assert views.summarize_page(page)["openComments"] == 2
+    assert "openComments" not in views.summarize_page({"objectId": "s1", "pageElements": []})

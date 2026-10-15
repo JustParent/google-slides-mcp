@@ -8,6 +8,7 @@ key part of keeping every tool's cost finite.
 
 from __future__ import annotations
 
+import json
 import random
 import time
 from dataclasses import dataclass
@@ -53,6 +54,14 @@ def _status_of(error: HttpError) -> int | None:
         return int(status)
     except (TypeError, ValueError):
         return None
+
+
+def error_message(error: HttpError) -> str:
+    """Google's own message for an ``HttpError``, falling back to ``str(error)``."""
+    try:
+        return json.loads(error.content.decode("utf-8"))["error"]["message"]
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return str(error)
 
 
 def execute(request):

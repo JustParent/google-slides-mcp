@@ -24,6 +24,10 @@ EXPECTED_TOOLS = {
     "replace_all_text",
     "insert_text",
     "set_element_text",
+    "list_comments",
+    "add_comment",
+    "reply_to_comment",
+    "delete_comment",
     "copy_presentation",
     "catalog_slides",
     "duplicate_slide",
@@ -53,6 +57,17 @@ def test_tools_have_schema_and_description():
         # inputSchema is a JSON schema dict generated from the type hints.
         assert isinstance(tool.inputSchema, dict)
         assert tool.inputSchema.get("type") == "object"
+
+
+def test_new_tool_parameters_are_exposed_with_the_right_defaults():
+    schemas = {tool.name: tool.inputSchema for tool in _list_tools()}
+    assert "required_revision_id" in schemas["batch_update"]["properties"]
+    assert schemas["batch_update"]["required"] == ["presentation_id", "requests"]
+    assert {"row", "column"} <= set(schemas["set_element_text"]["properties"])
+    assert schemas["set_element_text"]["required"] == ["presentation_id", "element_id", "text"]
+    assert schemas["add_comment"]["required"] == ["presentation_id", "content"]
+    assert schemas["list_comments"]["properties"]["status"]["default"] == "open"
+    assert schemas["delete_comment"]["required"] == ["presentation_id", "comment_id"]
 
 
 def test_batch_update_validates_requests():

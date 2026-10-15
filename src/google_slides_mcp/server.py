@@ -16,9 +16,11 @@ from typing import Annotated, Any
 from mcp.server.fastmcp import FastMCP, Image
 from pydantic import Field
 
+from . import comments as comments_mod
 from . import render as render_mod
 from . import search as search_mod
 from . import template as template_mod
+from . import textedit
 from . import views
 from .client import execute, get_services
 from .ids import new_id
@@ -161,16 +163,21 @@ def get_presentation(
     """Get a presentation as a bounded, structured overview. (1 API call.)
 
     By default returns a trimmed summary (slides, elements, positions, short text
-    snippets) so large decks stay within a finite output budget.
+    snippets) so large decks stay within a finite output budget. When the deck has
+    review comments you can see, the summary also carries ``comments`` (open /
+    resolved / orphaned counts) and an ``openComments`` count on each slide; read
+    them with ``list_comments``.
 
     Args:
         presentation_id: The presentation ID.
         include_masters: Also summarize layouts and masters.
-        raw: Return the full, untrimmed API response instead of the summary.
+        raw: Return the full, untrimmed API response instead of the summary (no
+            comments).
     """
     services = get_services()
+    options = {} if raw else {"commentsViewMode": comments_mod.DEFAULT_ACCESS}
     presentation = execute(
-        services.slides.presentations().get(presentationId=presentation_id)
+        services.slides.presentations().get(presentationId=presentation_id, **options)
     )
     if raw:
         return presentation
@@ -181,16 +188,21 @@ def get_presentation(
 def get_page(presentation_id: str, page_id: str, raw: bool = False) -> dict[str, Any]:
     """Get a single page (slide) as a bounded summary. (1 API call.)
 
+    The summary has an ``openComments`` count when the slide has open review
+    comments you can see; read them with ``list_comments``.
+
     Args:
         presentation_id: The presentation ID.
         page_id: The page (slide) object ID.
-        raw: Return the full, untrimmed API response instead of the summary.
+        raw: Return the full, untrimmed API response instead of the summary (no
+            comments).
     """
     services = get_services()
+    options = {} if raw else {"commentsViewMode": comments_mod.DEFAULT_ACCESS}
     page = execute(
         services.slides.presentations()
         .pages()
-        .get(presentationId=presentation_id, pageObjectId=page_id)
+        .get(presentationId=presentation_id, pageObjectId=page_id, **options)
     )
     if raw:
         return page
@@ -201,22 +213,27 @@ def get_page(presentation_id: str, page_id: str, raw: bool = False) -> dict[str,
 def list_slides(presentation_id: str) -> list[dict[str, Any]]:
     """List slides with index, id, and layout reference only. (1 API call.)
 
-    The lightest-weight read — use it to find slide IDs before deeper calls.
+    The lightest-weight read — use it to find slide IDs before deeper calls. A slide
+    with open review comments you can see also gets an ``openComments`` count.
     """
     services = get_services()
     presentation = execute(
-        services.slides.presentations().get(presentationId=presentation_id)
+        services.slides.presentations().get(
+            presentationId=presentation_id, commentsViewMode=comments_mod.DEFAULT_ACCESS
+        )
     )
+    open_by_slide = (comments_mod.summarize(presentation) or {}).get("bySlide", {})
     out: list[dict[str, Any]] = []
     for index, slide in enumerate(presentation.get("slides", [])):
         slide_props = slide.get("slideProperties", {})
-        out.append(
-            {
-                "index": index,
-                "objectId": slide.get("objectId"),
-                "layoutObjectId": slide_props.get("layoutObjectId"),
-            }
-        )
+        entry = {
+            "index": index,
+            "objectId": slide.get("objectId"),
+            "layoutObjectId": slide_props.get("layoutObjectId"),
+        }
+        if open_by_slide.get(slide.get("objectId")):
+            entry["openComments"] = open_by_slide[slide["objectId"]]
+        out.append(entry)
     return out
 
 
@@ -227,12 +244,14 @@ def list_slides(presentation_id: str) -> list[dict[str, Any]]:
 def batch_update(
     presentation_id: str,
     requests: list[dict[str, Any]],
+    required_revision_id: str | None = None,
 ) -> dict[str, Any]:
     """Apply raw Slides ``batchUpdate`` requests atomically. (1 API call.)
 
     This is the low-level power tool: ``requests`` is a list of Slides API request
     objects (e.g. ``createSlide``, ``insertText``, ``createShape``,
-    ``updateTextStyle``, ``updatePageElementTransform``, ``duplicateObject`` ...).
+    ``updateTextStyle``, ``updatePageElementTransform``, ``duplicateObject``,
+    ``insertComment`` ...).
     See https://developers.google.com/workspace/slides/api/reference/rest/v1/presentations/request
     Many edits batched into one call still cost a single write quota unit.
 
@@ -242,9 +261,16 @@ def batch_update(
     Args:
         presentation_id: The presentation ID.
         requests: A list of single-key Slides request objects.
+        required_revision_id: Optional guard for index-based edits: the ``revisionId``
+            you read the deck at (from ``get_presentation`` or a previous write). If
+            the deck has changed since, nothing is applied and the call fails. Any
+            change counts, including someone adding a comment.
 
     Returns:
-        ``{replies, warnings}`` where ``replies`` is the API response array.
+        ``{replies, revisionId, commentUpdateState?, warnings?}``: ``replies`` is the
+        API response array; ``revisionId`` is the deck's revision after the write
+        (pass it as the next ``required_revision_id``); ``commentUpdateState`` appears
+        when the batch contained comment requests, with a warning if they weren't saved.
     """
     if not isinstance(requests, list) or not requests:
         raise ValueError("`requests` must be a non-empty list of request objects.")
@@ -264,16 +290,17 @@ def batch_update(
                 "requires; the call may fail or behave unexpectedly."
             )
 
+    body: dict[str, Any] = {"requests": requests}
+    if required_revision_id:
+        body["writeControl"] = {"requiredRevisionId": required_revision_id}
+
     services = get_services()
     response = execute(
         services.slides.presentations().batchUpdate(
-            presentationId=presentation_id, body={"requests": requests}
+            presentationId=presentation_id, body=body
         )
     )
-    result: dict[str, Any] = {"replies": response.get("replies", [])}
-    if warnings:
-        result["warnings"] = warnings
-    return result
+    return comments_mod.batch_summary(response, warnings)
 
 
 # --------------------------------------------------------------------------- #
@@ -568,38 +595,190 @@ def set_element_text(
     presentation_id: str,
     element_id: str,
     text: str,
+    row: int | None = None,
+    column: int | None = None,
 ) -> dict[str, Any]:
-    """Replace ALL of a shape's (or table cell's) text in one call. (1 API call.)
+    """Make a shape's (or table cell's) text exactly ``text``. (2 API calls.)
 
-    Clears the element's existing text and sets it to ``text`` in a single batch
-    (``deleteText`` + ``insertText``). Safe to call on an empty element. This is the
-    ergonomic way to fill a freshly duplicated slide when the showcase example uses
-    real text rather than ``{{placeholder}}`` tokens.
+    Reads the deck, then changes only the part of the text that differs, so review
+    comments on the unchanged words stay attached and a comment on a phrase you
+    rewrite usually stays on the new phrase (deleting everything and retyping would
+    detach them). Safe to call on an empty element. This is the ergonomic way to fill
+    a freshly duplicated slide when the showcase example uses real text rather than
+    ``{{placeholder}}`` tokens.
+
+    The edit is written against the revision it was computed from and recomputed
+    once if the deck changed in between (up to 4 calls).
 
     Args:
         presentation_id: The presentation ID.
-        element_id: The shape or table-cell object ID.
+        element_id: The shape's object ID, or a table's object ID together with
+            ``row`` and ``column``.
         text: The new full text content.
+        row: Row of the table cell to set (0-based); tables only.
+        column: Column of the table cell to set (0-based); tables only.
     """
-    services = get_services()
-    execute(
-        services.slides.presentations().batchUpdate(
-            presentationId=presentation_id,
-            body={
-                "requests": [
-                    {"deleteText": {"objectId": element_id, "textRange": {"type": "ALL"}}},
-                    {
-                        "insertText": {
-                            "objectId": element_id,
-                            "text": text,
-                            "insertionIndex": 0,
-                        }
-                    },
-                ]
-            },
-        )
+    return textedit.set_element_text(
+        get_services(), presentation_id, element_id, text, row=row, column=column
     )
-    return {"objectId": element_id, "length": len(text)}
+
+
+# --------------------------------------------------------------------------- #
+# Review comments
+# --------------------------------------------------------------------------- #
+@mcp.tool()
+def list_comments(
+    presentation_id: str,
+    page_id: str | None = None,
+    status: Annotated[str, Field(description="open, resolved, or all")] = "open",
+) -> dict[str, Any]:
+    """List review comment threads and exactly where each one sits. (1 API call.)
+
+    Use it to find feedback to act on. Each thread has its ``commentId``, author,
+    ``content``, ``replies`` and the ``quote`` it was made on, plus ``locations``,
+    each with a ``kind``:
+
+    * ``slide`` / ``element``: the whole slide, or a whole shape, image or table;
+    * ``text``: a range in a shape (``elementId``, UTF-16 ``start``/``end`` and the
+      ``text`` it covers);
+    * ``table_cells``: ``cells`` with ``row``/``column`` (0-based) and text range;
+    * ``notes``: the slide's speaker notes.
+
+    ``slideId`` and ``slideIndex`` say which slide. A thread whose commented content
+    was deleted has no location and is flagged ``orphaned`` (it is reported only in
+    whole-deck listings). Reading comments needs comment access to the deck.
+
+    Args:
+        presentation_id: The presentation ID.
+        page_id: Only threads anchored on this slide.
+        status: ``open`` (default), ``resolved`` or ``all``.
+
+    Returns:
+        ``{presentationId, revisionId, counts: {open, resolved, orphaned}, threads}``.
+        ``counts`` cover the whole scope whatever ``status`` is. At most 100 threads
+        are returned; ``threadsTruncated`` says when there were more.
+    """
+    return comments_mod.list_comments(
+        get_services(), presentation_id, page_id=page_id, status=status
+    )
+
+
+@mcp.tool()
+def add_comment(
+    presentation_id: str,
+    content: str,
+    page_id: str | None = None,
+    element_id: str | None = None,
+    text: str | None = None,
+    occurrence: int | None = None,
+    row: int | None = None,
+    column: int | None = None,
+    row_span: int | None = None,
+    column_span: int | None = None,
+    notes: bool = False,
+) -> dict[str, Any]:
+    """Start a comment thread on a slide, element, quoted text, table cells or notes. (1-2 API calls.)
+
+    Slides has no suggestion mode, so a comment is the way to propose a change, ask a
+    question or flag a problem without editing the slide. Say where it goes with one
+    of these combinations:
+
+    * ``page_id`` alone: the whole slide.
+    * ``element_id`` alone: the whole shape, image or table.
+    * ``text``: the quoted words, found in any shape or table cell (exact,
+      case-sensitive); add ``page_id`` and/or ``element_id`` to narrow the search. If
+      the quote appears more than once the call fails and lists the candidates: pass
+      ``occurrence`` (1-based, in reading order) and/or ``element_id`` to choose.
+    * ``element_id`` (a table) with ``row`` and ``column``: one cell; add ``text`` to
+      quote words inside it, or ``row_span`` / ``column_span`` for a block of cells.
+    * ``notes=True`` with ``page_id``: the slide's speaker notes; add ``text`` to
+      quote words inside them.
+
+    A quote or the notes are located with one extra read (2 calls); the other forms
+    are a single write.
+
+    Args:
+        presentation_id: The presentation ID.
+        content: The comment text (plain text).
+        page_id: The slide's object ID.
+        element_id: The shape or table's object ID.
+        text: Words to anchor the comment to.
+        occurrence: Which occurrence of ``text`` (1-based) when it appears more than once.
+        row: Table cell row (0-based).
+        column: Table cell column (0-based).
+        row_span: Rows in a block of table cells (default 1).
+        column_span: Columns in a block of table cells (default 1).
+        notes: Anchor to the speaker notes of ``page_id``.
+
+    Returns:
+        ``{commentId, status, location, quote?, revisionId}``.
+    """
+    return comments_mod.add_comment(
+        get_services(),
+        presentation_id,
+        content,
+        page_id=page_id,
+        element_id=element_id,
+        text=text,
+        occurrence=occurrence,
+        row=row,
+        column=column,
+        row_span=row_span,
+        column_span=column_span,
+        notes=notes,
+    )
+
+
+@mcp.tool()
+def reply_to_comment(
+    presentation_id: str,
+    comment_id: str,
+    content: str = "",
+    action: Annotated[
+        str, Field(description="resolve, reopen, or empty for a plain reply")
+    ] = "",
+) -> dict[str, Any]:
+    """Reply to a comment thread, and/or resolve or reopen it. (1 API call.)
+
+    After acting on a piece of feedback, reply with what you changed and resolve the
+    thread. ``content`` may be empty when ``action`` is given.
+
+    Args:
+        presentation_id: The presentation ID.
+        comment_id: The thread's ``commentId`` (from ``list_comments``).
+        content: The reply text (plain text).
+        action: ``resolve``, ``reopen``, or empty for a plain reply.
+
+    Returns:
+        ``{commentId, postId, status?, revisionId}``; ``status`` is set when ``action``
+        was given.
+    """
+    return comments_mod.reply_to_comment(
+        get_services(), presentation_id, comment_id, content=content, action=action
+    )
+
+
+@mcp.tool()
+def delete_comment(
+    presentation_id: str,
+    comment_id: str,
+    post_id: str | None = None,
+) -> dict[str, Any]:
+    """Delete a comment thread, or just one reply of it. (1 API call.)
+
+    Without ``post_id`` the whole thread is deleted; with it, only that reply (its
+    ``postId`` is in ``list_comments``). You can delete only what you wrote, and a
+    reply that resolved or reopened the thread can't be deleted: to undo a resolution
+    use ``reply_to_comment`` with ``action="reopen"``.
+
+    Args:
+        presentation_id: The presentation ID.
+        comment_id: The thread's ``commentId``.
+        post_id: A reply's ``postId``, to delete only that reply.
+    """
+    return comments_mod.delete_comment(
+        get_services(), presentation_id, comment_id, post_id=post_id
+    )
 
 
 # --------------------------------------------------------------------------- #
