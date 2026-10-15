@@ -17,8 +17,11 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "mcp>=1.2.0",
-    "google-api-python-client>=2.100.0",
+    # mcp 2 renamed mcp.server.fastmcp, which this server imports.
+    "mcp>=1.2.0,<2",
+    # 2.201.0 is the first release whose bundled Slides discovery document knows about
+    # comments (the commentsViewMode parameter); older ones raise a TypeError on reads.
+    "google-api-python-client>=2.201.0",
     "google-auth>=2.26.0",
     "google-auth-oauthlib>=1.2.0",
     "Pillow>=10.0.0",

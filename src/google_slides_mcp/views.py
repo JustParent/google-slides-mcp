@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import comments
 from .units import bounding_box
 
 # Bounds that keep output finite regardless of deck size.
@@ -116,6 +117,11 @@ def summarize_page(page: dict[str, Any]) -> dict[str, Any]:
         # Only surface when parked/hidden, to keep output lean.
         if slide_props.get("isSkipped"):
             summary["isSkipped"] = True
+    # A ``pages.get`` response carries the page's own threads (a slide taken from a
+    # whole-deck response doesn't; ``summarize_presentation`` adds its counts).
+    open_threads = sum(1 for t in page.get("comments", []) if t.get("status") != "RESOLVED")
+    if open_threads:
+        summary["openComments"] = open_threads
     if truncated:
         summary["elementsTruncated"] = True
     return summary
@@ -142,6 +148,15 @@ def summarize_presentation(
         "slideCount": len(presentation.get("slides", [])),
         "slides": [summarize_page(p) for p in presentation.get("slides", [])],
     }
+    comment_summary = comments.summarize(presentation)
+    if comment_summary:
+        summary["comments"] = {
+            key: comment_summary[key] for key in ("open", "resolved", "orphaned")
+        }
+        for slide_summary in summary["slides"]:
+            count = comment_summary["bySlide"].get(slide_summary["objectId"])
+            if count:
+                slide_summary["openComments"] = count
     if include_masters:
         summary["layouts"] = [
             summarize_page(p) for p in presentation.get("layouts", [])

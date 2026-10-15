@@ -106,8 +106,10 @@ Filling strategy:
   `replace_all_text(presentation_id, mappings={"{{title}}": "Results"},
   page_ids=["<slide>"])` — scope it to the new slide so you don't rewrite the
   whole deck.
-- Otherwise use `set_element_text` per element (replaces all of that element's
-  text in one call; safe on empty elements).
+- Otherwise use `set_element_text` per element. It makes the element's text exactly
+  what you give but edits only the words that differ (2 calls: a read, then the
+  write), so review comments on the rest stay attached; it is safe on empty
+  elements. For a table cell pass `row` and `column` with the table's ID.
 
 ### 3. Adjust layout (optional)
 
@@ -138,6 +140,50 @@ This removes the hidden palette. **Always do this last.** If you need a layout y
 never instantiated, do it *before* pruning — once pruned, that example is gone
 (no cross-deck copy to bring it back).
 
+## Review comments
+
+Use these when the user mentions comments, feedback or review on a deck, or wants
+changes proposed rather than made. Slides has **no suggestion mode**, so an anchored
+comment is how you propose or flag something without editing the slide.
+
+```
+get_presentation(presentation_id="<deck>")
+  → comments: {open, resolved, orphaned} and openComments per slide: is there feedback?
+list_comments(presentation_id="<deck>")                    # add page_id to look at one slide
+  → each open thread: commentId, content, replies, quote, locations
+```
+
+Every location says where the comment sits: `kind` is `slide`, `element`, `text`
+(`elementId`, `start`/`end` and the `text` it covers), `table_cells` (`cells` with
+`row`/`column`) or `notes` (speaker notes), with `slideId`/`slideIndex`. Locate the
+words it refers to, change them (`set_element_text`, `replace_all_text`, or
+`batch_update`), then answer:
+
+```
+reply_to_comment(presentation_id="<deck>", comment_id="<id>",
+                 content="Changed to 14% per the Q3 sheet.", action="resolve")
+```
+
+- To **propose** a change or ask a question instead of editing:
+  `add_comment(presentation_id, content, text="<the words>")`. Other anchors: `page_id`
+  (the slide), `element_id` (a shape or table), `element_id` + `row` + `column` (a
+  table cell), `notes=True` + `page_id` (speaker notes). If a quote appears more than
+  once the call fails and lists the candidates; pass `occurrence` or `element_id`.
+- Resolve a thread only when you actually made the change it asked for; reply
+  without `action` when you only have an answer or a question.
+- A thread flagged `orphaned` has lost the content it was about (it keeps its
+  `quote`). Read it, and re-comment on the right place with `add_comment` if it still
+  matters. Prefer `set_element_text` / `replace_all_text` over deleting and retyping
+  text, which would orphan the comments on it.
+- `delete_comment` removes a thread (or one reply) for good; you can delete only what
+  you wrote. Don't delete other people's feedback: resolve it.
+- Never put e-mail addresses or @mentions in comment text: Google notifies the people
+  named.
+- Every write changes the deck's `revisionId`. For an index-based `batch_update`,
+  pass the `revisionId` you last saw as `required_revision_id`; it fails instead of
+  editing the wrong text if the deck changed (including someone adding a comment), and
+  each write returns the new revision.
+
 ## Raw `batch_update`
 
 `batch_update` takes a list of raw Slides API request objects and applies them
@@ -163,7 +209,8 @@ Every tool makes a bounded number of API calls and returns trimmed output. To ke
 a session cheap and predictable:
 
 - Use `list_slides` / `catalog_slides` to find IDs; only `get_page(..., raw=True)`
-  or `get_presentation(..., raw=True)` when you genuinely need full detail.
+  or `get_presentation(..., raw=True)` when you genuinely need full detail (raw
+  responses leave comments out; use `list_comments`).
 - Batch many edits into one `batch_update` rather than many small calls.
 - `render_page` / `diff_pages` hit the **expensive** thumbnail quota (300/min per
   project, 60/min per user). Render specific pages you changed — never loop over a

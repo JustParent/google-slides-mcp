@@ -19,8 +19,13 @@ presentations and slides as structured objects, it can:
   matrix math, plus raw transform / z‑order / grouping control.
 - **Render slides to PNG** and **diff two renders** so you can verify output is
   pixel‑perfect.
+- **Work with review comments.** See exactly where every comment thread sits — a
+  slide, an element, a range of text, table cells or the speaker notes — reply to
+  and resolve them, and leave anchored comments to propose a change without editing
+  (Slides has no suggestion mode). Text edits through `set_element_text` change only
+  the words that differ, so comments on the rest stay attached.
 - **Issue raw `batchUpdate` requests** for anything the convenience tools don't
-  cover.
+  cover, optionally guarded by the revision you read.
 
 Every tool makes a **bounded number of API calls** and returns **trimmed output**,
 so an LLM driving it has a predictable, finite cost.
@@ -159,15 +164,15 @@ After PyPI publication: `"args": ["google-slides-mcp"]`.
 | Tool | Purpose | API calls |
 | ---- | ------- | --------- |
 | `create_presentation(title)` | Create an empty deck. | 1 |
-| `get_presentation(presentation_id, include_masters?, raw?)` | Bounded structured overview of a deck. | 1 |
+| `get_presentation(presentation_id, include_masters?, raw?)` | Bounded structured overview of a deck, with open-comment counts. | 1 |
 | `get_page(presentation_id, page_id, raw?)` | Bounded summary of one slide. | 1 |
-| `list_slides(presentation_id)` | Minimal index/id/layout list. | 1 |
+| `list_slides(presentation_id)` | Minimal index/id/layout list, with open-comment counts. | 1 |
 
 **Raw write**
 
 | Tool | Purpose | API calls |
 | ---- | ------- | --------- |
-| `batch_update(presentation_id, requests)` | Apply raw Slides `batchUpdate` requests atomically. | 1 |
+| `batch_update(presentation_id, requests, required_revision_id?)` | Apply raw Slides `batchUpdate` requests atomically; returns the new `revisionId`, and `commentUpdateState` for comment requests. | 1 |
 
 **Element / transform / bounding box**
 
@@ -184,7 +189,16 @@ After PyPI publication: `"args": ["google-slides-mcp"]`.
 | ---- | ------- | --------- |
 | `replace_all_text(presentation_id, mappings, page_ids?, match_case?)` | Fill placeholder tokens. | 1 |
 | `insert_text(presentation_id, element_id, text, index?)` | Insert text into a shape/cell. | 1 |
-| `set_element_text(presentation_id, element_id, text)` | Replace **all** of one element's text. | 1 |
+| `set_element_text(presentation_id, element_id, text, row?, column?)` | Make one shape's (or table cell's) text exactly `text`, editing only what differs so comments stay attached. | 2 |
+
+**Review comments**
+
+| Tool | Purpose | API calls |
+| ---- | ------- | --------- |
+| `list_comments(presentation_id, page_id?, status?)` | Comment threads (`open` by default) with replies and exact locations; flags orphaned threads. | 1 |
+| `add_comment(presentation_id, content, page_id?, element_id?, text?, occurrence?, row?, column?, row_span?, column_span?, notes?)` | Start a thread on a slide, an element, quoted text, table cells or speaker notes. | 1–2 |
+| `reply_to_comment(presentation_id, comment_id, content?, action?)` | Reply, and/or `resolve` / `reopen` the thread. | 1 |
+| `delete_comment(presentation_id, comment_id, post_id?)` | Delete a thread, or one reply. | 1 |
 
 **Template / showcase reuse**
 
@@ -292,6 +306,62 @@ lost. Prefer keeping the palette parked.
 
 ---
 
+## Review comments
+
+Reviewers leave comments on slides; these tools let an assistant read them in
+place, act on them and answer. Slides has no suggestion mode, so a comment is also
+how an assistant proposes or flags a change *without* editing the slide.
+
+```
+get_presentation(presentation_id="<deck>")
+  → comments: {open: 3, resolved: 1, orphaned: 0}, and openComments on each slide
+list_comments(presentation_id="<deck>")
+  → every open thread: content, replies, the quote it was made on, and where it sits
+set_element_text / replace_all_text / batch_update       → make the change it asks for
+reply_to_comment(presentation_id="<deck>", comment_id="<id>",
+                 content="Changed to 14%.", action="resolve")
+
+add_comment(presentation_id="<deck>", content="Source for this number?", text="14%")
+  → flag something without touching the slide
+```
+
+**Where a comment sits.** Each location in `list_comments` has a `kind`: `slide`,
+`element` (a whole shape, image or table), `text` (a range in a shape, with the
+words it covers), `table_cells` (cells, each with its range) or `notes` (speaker
+notes), plus `slideId` and `slideIndex`. `add_comment` takes the same:
+
+| To comment on… | Pass |
+| -------------- | ---- |
+| a slide | `page_id` |
+| a shape, image or table | `element_id` |
+| some words | `text` (exact, case-sensitive); add `page_id` / `element_id` to narrow the search, or `occurrence` (1-based) when the quote repeats |
+| a table cell, or words in it | `element_id` + `row` + `column` (0-based), and optionally `text` |
+| a block of cells | `element_id` + `row` + `column` + `row_span` / `column_span` |
+| the speaker notes | `notes=True` + `page_id`, and optionally `text` |
+
+**Worth knowing**
+
+- Reading comments needs comment access to the deck. The overviews
+  (`get_presentation`, `get_page`, `list_slides`) use Google's "current access" mode,
+  which (per its documentation) leaves comments out rather than failing for a
+  view-only user; `list_comments` reports the error instead.
+- A thread whose commented content was deleted stays open but has no location: it is
+  flagged `orphaned` and keeps its `quote`. `set_element_text` and `replace_all_text`
+  keep comments attached to the words they leave in place, and to a phrase that is
+  replaced; deleting a shape, or deleting and retyping text through raw requests,
+  detaches them.
+- Every comment write bumps the deck's `revisionId`. To guard an index-based edit,
+  pass the `revisionId` you last saw as `required_revision_id` to `batch_update`;
+  every write returns the new one.
+- `duplicate_slide` puts a text-range thread on the copy as well (one thread, two
+  locations). Drive `files.copy` (`copy_presentation`) does not copy comments.
+- Assignees and @mentions are not exposed because they notify people;
+  `batch_update` accepts `insertComment` with `assigneeEmailAddress` if you need one.
+- Needs `google-api-python-client` 2.201.0 or newer (older releases don't know the
+  comments parameters). No new OAuth scope is needed.
+
+---
+
 ## Development
 
 ```bash
@@ -311,6 +381,8 @@ The codebase is intentionally small and modular so it can back that skill:
 | `client.py` | Builds Slides/Drive services; bounded 429/5xx backoff. |
 | `units.py` | EMU/PT conversion, transform & bounding‑box math. |
 | `views.py` | Trims verbose API responses into bounded summaries. |
+| `comments.py` | Comment threads and their anchors: read them, locate quoted text, write them. |
+| `textedit.py` | Minimal text edits that keep comment anchors attached. |
 | `ids.py` | Collision‑safe object‑ID generation. |
 | `template.py` | Copy / catalog / duplicate / prune helpers. |
 | `search.py` | Drive search over Slides/PPTX files; PPTX → Slides import. |
@@ -324,6 +396,10 @@ The codebase is intentionally small and modular so it can back that skill:
   re-run the auth command or publish the consent screen.
 - **`insufficient scopes` / can't copy a template** — ensure the `auth/drive` scope
   is granted (re-run auth after enabling it on the consent screen).
+- **`unexpected keyword argument 'commentsViewMode'`** — `google-api-python-client`
+  is older than 2.201.0; upgrade it.
+- **`No module named 'mcp.server.fastmcp'`** — mcp 2.x was installed, which renamed
+  that module. This server needs `mcp<2` (the package metadata now says so).
 - **"Access blocked: Authorization Error" / `Error 400: invalid_scope`
   (`Some requested scopes were invalid`)** — the scopes sent weren't
   fully‑qualified URLs. Use the full `https://www.googleapis.com/auth/...` form (or
